@@ -1,10 +1,16 @@
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
 from PIL import Image
-import logging
-from load_models import *
+import time
+from load_models import load_sam_model, load_clip_model, load_da_model
+from visualization import visualize_segment_scores
 
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    force=True
+)
 logger = logging.getLogger(__name__)
 
 def generate_sam_masks(
@@ -14,7 +20,7 @@ def generate_sam_masks(
         device: str,
         grid_size: int = 6,
         mask_quality_threshold: float = 0.5,
-    ) -> List[Dict]:
+    ) -> list[dict]:
     """
     Generate masks from image using SAM model.
 
@@ -120,18 +126,21 @@ def generate_sam_masks(
                     processed_masks.append(mask_np)
                     
             except Exception as e:
-                logger.warn(f"Failed to do segmentation: {e}")
+                logger.warning(f"Failed to do segmentation: {e}")
     
     logger.info(f"Generated {len(proposals)} unique segment proposals")
     return proposals
 
 def score_with_clip(
         image: Image.Image, 
-        masks: np.ndarray, 
+        mask: np.ndarray, 
         clip_model: object, 
         clip_processor: object, 
         device: str,
+        safety_embeddings: torch.Tensor,
+        trav_embeddings: torch.Tensor,
         padding_ratio: float = 0.1,
+        safety_threshold: float = 0.3,
     ) -> tuple:
     """Extract and score CLIP features from a segmented region."""
     try:
@@ -158,34 +167,112 @@ def score_with_clip(
 
         with torch.no_grad():
             image_features = clip_model.get_image_features(**inputs)
-            image_features /= torch.linalg.vector_norm(image_features, ord=2)  # Normalize the feature vector to unit L2 length
-        
-        # Cosine similarity with predetermined feature vectors
+            if not isinstance(image_features, torch.Tensor):
+                image_features = image_features.pooler_output
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+            #image_features /= torch.linalg.vector_norm(image_features, ord=2)  # Normalize the feature vector to unit L2 length
 
+        image_features = image_features.cpu().numpy().squeeze()
         # Safety checks (humans are NOT traversible)
+        for text_features in safety_embeddings:
+            if np.dot(image_features, text_features).squeeze() > safety_threshold:
+                return 0
 
-        return #image_features.cpu().numpy().squeeze()
+        scores = []
+        # Cosine similarity with predetermined feature vectors
+        for text_features in trav_embeddings:
+            scores.append(np.dot(image_features, text_features).squeeze())
+
+        return max(scores)
         
     except Exception as e:
         logger.error(f"Failed to extract CLIP features: {e}")
         return None
-    pass
+
+def prepare_text_embeddings(
+        safety_queries: list[str], 
+        trav_queries: list[str], 
+        clip_model: object, 
+        clip_processor: object, 
+        clip_device: str,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+
+    # Prepare "safety" embeddings
+    safety_embeddings = [] 
+    for text_query in safety_queries:
+        inputs = clip_processor(text=[text_query], return_tensors="pt")
+        inputs = {k: v.to(clip_device) for k, v in inputs.items()}
+        
+        with torch.no_grad():
+            text_features = clip_model.get_text_features(**inputs)
+
+            if not isinstance(text_features, torch.Tensor):
+                text_features = text_features.pooler_output
+
+            # Normalize text features for cosine-similarity queries.
+            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+    
+        safety_embeddings.append(text_features.cpu().numpy().squeeze())
+
+    # Prepare "traversablity" embeddings
+    trav_embeddings = []
+    for text_query in trav_queries:
+        inputs = clip_processor(text=[text_query], return_tensors="pt")
+        inputs = {k: v.to(clip_device) for k, v in inputs.items()}
+        
+        with torch.no_grad():
+            text_features = clip_model.get_text_features(**inputs)
+
+            if not isinstance(text_features, torch.Tensor):
+                text_features = text_features.pooler_output
+
+            # Normalize text features for cosine-similarity queries.
+            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+    
+        trav_embeddings.append(text_features.cpu().numpy().squeeze())
+
+    return safety_embeddings, trav_embeddings
 
 def pipeline() -> None:
 
-    # Load image from some kind of buffer maybe?
+    # Future TODO: Load image from some kind of buffer maybe?
     image = Image.open("./Rellis_3D_image_example/pylon_camera_node/frame000002-1581624652_949.jpg")
-
+    safety_queries = ["human", "person", "animal", "man", "woman", "child", "baby", "cliff"]
+    trav_queries = ["path", "ground", "walkable", "floor", "grass", "road", "walkway"]
 
     sam_model, sam_processor, sam_device = load_sam_model()
 
+    clip_model, clip_processor, clip_device = load_clip_model()
+
+    # Pre-process queries for faster scoring (shaves off roughly 1 second of processing time per image)
+    safety_embeddings, trav_embeddings = prepare_text_embeddings(safety_queries, trav_queries, clip_model, clip_processor, clip_device)
+
+    logger.info(f"All models loaded.")
+
+    start_processing_time = time.time()
+
     segmentations = generate_sam_masks(image, sam_model, sam_processor, sam_device)
 
+    end_SAM_processing_time = time.time()
+    logger.info(f"SAM processing time: {(end_SAM_processing_time-start_processing_time):.4f}s")
+
     for segment in segmentations:
-        
         mask = segment["mask"]
+    
+        segment["clip_score"] = score_with_clip(image, mask, clip_model, clip_processor, clip_device, safety_embeddings, trav_embeddings)
+        # TODO: Maybe scale final CLIP score with SAM confidence? Example:
+        segment["trav_score"] = segment["confidence"] * segment["clip_score"]
 
-        segment["clip_score"] = score_with_clip(image, mask, clip_model, clip_processor, clip_device)
+    end_CLIP_processing_time = time.time()
+    logger.info(f"CLIP processing time: {(end_CLIP_processing_time-end_SAM_processing_time):.4f}s (avg {(end_CLIP_processing_time-end_SAM_processing_time)/len(segmentations):.4f}s per segment)")
+    logger.info(f"Total processing time: {(end_CLIP_processing_time-start_processing_time):.4f}s")
 
-    # Huh
+    logger.info("Visualizing results...")
+    visualize_segment_scores(segmentations, image)
 
+
+def main() -> None:
+    pipeline()
+
+if __name__=="__main__":
+    main()
