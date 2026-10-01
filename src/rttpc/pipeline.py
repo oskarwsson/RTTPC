@@ -3,7 +3,7 @@ import torch
 from PIL import Image
 import time
 from load_models import load_sam_model, load_clip_model, load_da_model
-from visualization import visualize_segment_scores
+from visualization import visualize_segment_scores, visualize_traversable_segments
 
 import logging
 logging.basicConfig(
@@ -20,6 +20,7 @@ def generate_sam_masks(
         device: str,
         grid_size: int = 6,
         mask_quality_threshold: float = 0.5,
+        max_area_ratio: float = 0.4,
     ) -> list[dict]:
     """
     Generate masks from image using SAM model.
@@ -106,20 +107,27 @@ def generate_sam_masks(
                     mask_np = mask.cpu().numpy().astype(bool)
                 else:
                     mask_np = np.array(mask).astype(bool)
+
+                # Skip masks that are too large
+                area = np.count_nonzero(mask_np)
+                area_ratio = area / mask_np.size
+
+                if area_ratio > max_area_ratio:
+                    continue
                 
                 # Check for duplicates
                 is_duplicate = False
                 for existing_mask in processed_masks:
-                    overlap = np.sum(mask_np & existing_mask)
-                    union = np.sum(mask_np | existing_mask)
+                    overlap = np.count_nonzero(mask_np & existing_mask)
+                    union = np.count_nonzero(mask_np | existing_mask)
                     if union > 0 and overlap / union > 0.8:
                         is_duplicate = True
                         break
                 
-                if not is_duplicate and np.sum(mask_np) > 100:
+                if not is_duplicate and np.count_nonzero(mask_np) > 100:
                     proposals.append({
                         'mask': mask_np,
-                        'area': np.sum(mask_np),
+                        'area': np.count_nonzero(mask_np),
                         'point': [x, y],
                         'confidence': best_score
                     })
@@ -137,11 +145,10 @@ def score_with_clip(
         clip_model: object, 
         clip_processor: object, 
         device: str,
-        safety_embeddings: torch.Tensor,
-        trav_embeddings: torch.Tensor,
-        padding_ratio: float = 0.1,
-        safety_threshold: float = 0.3,
-    ) -> tuple:
+        positive_embeddings: list[torch.Tensor],
+        negative_embeddings: list[torch.Tensor],
+        padding_ratio: float = 0.05, #0.01
+    ) -> float:
     """Extract and score CLIP features from a segmented region."""
     try:
         # Find bounding box of mask
@@ -173,33 +180,26 @@ def score_with_clip(
             #image_features /= torch.linalg.vector_norm(image_features, ord=2)  # Normalize the feature vector to unit L2 length
 
         image_features = image_features.cpu().numpy().squeeze()
-        # Safety checks (humans are NOT traversible)
-        for text_features in safety_embeddings:
-            if np.dot(image_features, text_features).squeeze() > safety_threshold:
-                return 0
 
-        scores = []
-        # Cosine similarity with predetermined feature vectors
-        for text_features in trav_embeddings:
-            scores.append(np.dot(image_features, text_features).squeeze())
-
-        return max(scores)
+        positive_score = max(image_features @ t for t in positive_embeddings)
+        negative_score = max(image_features @ t for t in negative_embeddings)
+        return positive_score - negative_score
         
     except Exception as e:
         logger.error(f"Failed to extract CLIP features: {e}")
         return None
 
 def prepare_text_embeddings(
-        safety_queries: list[str], 
-        trav_queries: list[str], 
+        positive_queries: list[str], 
+        negative_queries: list[str], 
         clip_model: object, 
         clip_processor: object, 
         clip_device: str,
     ) -> tuple[torch.Tensor, torch.Tensor]:
 
-    # Prepare "safety" embeddings
-    safety_embeddings = [] 
-    for text_query in safety_queries:
+    # Prepare negative embeddings
+    negative_embeddings = [] 
+    for text_query in negative_queries:
         inputs = clip_processor(text=[text_query], return_tensors="pt")
         inputs = {k: v.to(clip_device) for k, v in inputs.items()}
         
@@ -212,11 +212,11 @@ def prepare_text_embeddings(
             # Normalize text features for cosine-similarity queries.
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
     
-        safety_embeddings.append(text_features.cpu().numpy().squeeze())
+        negative_embeddings.append(text_features.cpu().numpy().squeeze())
 
-    # Prepare "traversablity" embeddings
-    trav_embeddings = []
-    for text_query in trav_queries:
+    # Prepare positive embeddings
+    positive_embeddings = []
+    for text_query in positive_queries:
         inputs = clip_processor(text=[text_query], return_tensors="pt")
         inputs = {k: v.to(clip_device) for k, v in inputs.items()}
         
@@ -229,23 +229,37 @@ def prepare_text_embeddings(
             # Normalize text features for cosine-similarity queries.
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
     
-        trav_embeddings.append(text_features.cpu().numpy().squeeze())
+        positive_embeddings.append(text_features.cpu().numpy().squeeze())
 
-    return safety_embeddings, trav_embeddings
+    return positive_embeddings, negative_embeddings
 
 def pipeline() -> None:
 
     # Future TODO: Load image from some kind of buffer maybe?
     image = Image.open("./Rellis_3D_image_example/pylon_camera_node/frame000002-1581624652_949.jpg")
-    safety_queries = ["human", "person", "animal", "man", "woman", "child", "baby", "cliff"]
-    trav_queries = ["path", "ground", "walkable", "floor", "grass", "road", "walkway"]
+    positive_queries = [
+        "a photo of a flat clear road",
+        "a photo of a walkable dirt path",
+        "a photo of flat grassy ground",
+    ]
+    negative_queries = [
+        "a photo of the sky",
+        "a photo of a wall",
+        "a photo of deep water",
+        "a photo of a puddle",
+        "a photo of a tree",
+        "a photo of a large rock",
+        "a photo of a person",
+        "a photo of a cliff",
+        "a photo of a bush"
+    ]
 
     sam_model, sam_processor, sam_device = load_sam_model()
 
     clip_model, clip_processor, clip_device = load_clip_model()
 
     # Pre-process queries for faster scoring (shaves off roughly 1 second of processing time per image)
-    safety_embeddings, trav_embeddings = prepare_text_embeddings(safety_queries, trav_queries, clip_model, clip_processor, clip_device)
+    safety_embeddings, trav_embeddings = prepare_text_embeddings(positive_queries, negative_queries, clip_model, clip_processor, clip_device)
 
     logger.info(f"All models loaded.")
 
@@ -261,7 +275,8 @@ def pipeline() -> None:
     
         segment["clip_score"] = score_with_clip(image, mask, clip_model, clip_processor, clip_device, safety_embeddings, trav_embeddings)
         # TODO: Maybe scale final CLIP score with SAM confidence? Example:
-        segment["trav_score"] = segment["confidence"] * segment["clip_score"]
+        segment["trav_score"] = segment["clip_score"] # * segment["confidence"]
+        #visualize_segment_scores([segment], image)
 
     end_CLIP_processing_time = time.time()
     logger.info(f"CLIP processing time: {(end_CLIP_processing_time-end_SAM_processing_time):.4f}s (avg {(end_CLIP_processing_time-end_SAM_processing_time)/len(segmentations):.4f}s per segment)")
@@ -269,6 +284,7 @@ def pipeline() -> None:
 
     logger.info("Visualizing results...")
     visualize_segment_scores(segmentations, image)
+    visualize_traversable_segments(segmentations, image)
 
 
 def main() -> None:
