@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import open3d
 from PIL import Image
 import time
 from load_models import load_sam_model, load_clip_model, load_da_model
@@ -150,6 +151,75 @@ def score_with_clip(
         logger.error(f"Failed to extract CLIP features: {e}")
         return None
 
+def get_image_depth(
+        image: Image.Image, 
+        da_model: object, 
+        da_processor: object,
+        da_device: object,
+    ) -> torch.Tensor:
+    # prepare image for the model
+    inputs = da_processor(images=image, return_tensors="pt")
+    inputs = {k: v.to(da_device) for k, v in inputs.items()}
+
+    with torch.no_grad():
+        outputs = da_model(**inputs)
+
+    # interpolate to original size
+    post_processed_output = da_processor.post_process_depth_estimation(
+        outputs,
+        target_sizes=[(image.height, image.width)],
+    )
+
+    predicted_depth = post_processed_output[0]["predicted_depth"]
+    #depth = predicted_depth.detach().cpu().numpy()
+    #depth = Image.fromarray(depth.astype("uint8"))
+    
+    return predicted_depth
+
+
+def image_to_world(
+    image: Image.Image,
+    depth: torch.Tensor,
+    camera_intrinsics: torch.Tensor | np.ndarray,
+) -> open3d.geometry.PointCloud:
+    
+    width, height = image.size
+
+    color_np = np.ascontiguousarray(image.convert("RGB"), dtype=np.uint8)
+    depth_np = np.ascontiguousarray(
+        depth.detach().cpu().float().numpy()
+    )
+
+    if depth_np.shape != (height, width):
+        raise ValueError("Depth must have shape (image.height, image.width)")
+
+    if isinstance(camera_intrinsics, torch.Tensor):
+        camera_intrinsics = camera_intrinsics.detach().cpu().numpy()
+
+    K = np.asarray(camera_intrinsics, dtype=np.float64)
+    if K.shape != (3, 3):
+        raise ValueError("Camera intrinsics must have shape (3, 3)")
+
+    intrinsic = open3d.camera.PinholeCameraIntrinsic(
+        width, height,
+        fx=float(K[0, 0]),
+        fy=float(K[1, 1]),
+        cx=float(K[0, 2]),
+        cy=float(K[1, 2]),
+    )
+
+    rgbd = open3d.geometry.RGBDImage.create_from_color_and_depth(
+        open3d.geometry.Image(color_np),
+        open3d.geometry.Image(depth_np),
+        depth_scale=1.0,           # Input already in metres
+        depth_trunc=float("inf"), # Keep distant points
+        convert_rgb_to_intensity=False,
+    )
+
+    return open3d.geometry.PointCloud.create_from_rgbd_image(
+        rgbd, intrinsic
+    )
+
 def prepare_text_embeddings(
         positive_queries: list[str], 
         negative_queries: list[str], 
@@ -198,11 +268,14 @@ def pipeline() -> None:
 
     # Future TODO: Load image from some kind of buffer maybe?
     image = Image.open("./Rellis_3D_image_example/pylon_camera_node/frame000002-1581624652_949.jpg")
+    camera_intrinsics = np.array([[2813.643275, 0., 969.285772],[0., 2808.326079, 624.049972],[0., 0., 1.]])
+       
     positive_queries = [
         "a photo of a flat clear road",
         "a photo of a walkable dirt path",
         "a photo of flat grassy ground",
     ]
+
     negative_queries = [
         "a photo of the sky",
         "a photo of a wall",
@@ -220,17 +293,29 @@ def pipeline() -> None:
 
     clip_model, clip_processor, clip_device = load_clip_model()
 
+    da_model, da_processor, da_device = load_da_model()
+
     # Pre-process queries for faster scoring (shaves off roughly 1 second of processing time per image)
     safety_embeddings, trav_embeddings = prepare_text_embeddings(positive_queries, negative_queries, clip_model, clip_processor, clip_device)
 
     logger.info(f"All models loaded.")
 
+    # Depth time :)
     start_processing_time = time.time()
 
+    depth = get_image_depth(image, da_model, da_processor, da_device)
+
+    pcd = image_to_world(image, depth, camera_intrinsics)
+
+    end_da_processing_time = time.time()
+
+    logger.info(f"DepthAnything processing time: {(end_da_processing_time-start_processing_time):.4f}s")
+
+    # SAM time :D
     segmentations = generate_sam_masks(image, sam_model, sam_processor, sam_device)
 
     end_SAM_processing_time = time.time()
-    logger.info(f"SAM processing time: {(end_SAM_processing_time-start_processing_time):.4f}s")
+    logger.info(f"SAM processing time: {(end_SAM_processing_time-end_da_processing_time):.4f}s")
 
     for segment in segmentations:
         mask = segment["mask"]
@@ -240,6 +325,8 @@ def pipeline() -> None:
         segment["trav_score"] = segment["clip_score"] # * segment["confidence"]
         #visualize_segment_scores([segment], image)
 
+        # TODO: maybe mask using depth? far away stuff should be more uncertain (lower resolution)
+
     end_CLIP_processing_time = time.time()
     logger.info(f"CLIP processing time: {(end_CLIP_processing_time-end_SAM_processing_time):.4f}s (avg {(end_CLIP_processing_time-end_SAM_processing_time)/len(segmentations):.4f}s per segment)")
     logger.info(f"Total processing time: {(end_CLIP_processing_time-start_processing_time):.4f}s")
@@ -247,6 +334,14 @@ def pipeline() -> None:
     logger.info("Visualizing results...")
     visualize_segment_scores(segmentations, image)
     visualize_traversable_segments(segmentations, image)
+
+    open3d.visualization.draw_geometries(
+        [pcd],
+        zoom=0.3412,
+        front=[0.4257, -0.2125, -0.8795],
+        lookat=[2.6172, 2.0475, 1.532],
+        up=[-0.0694, -0.9768, 0.2024]
+    )
 
 
 def main() -> None:

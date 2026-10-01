@@ -7,7 +7,7 @@ import gc
 
 def show_mask(mask: np.ndarray, ax: Axes, random_color: bool = False):
     if random_color:
-        color = np.concatenate([np.random.random(3), np.array([0.4])], axis=0)
+        color = np.concatenate([np.random.random(3), np.array([0.5])], axis=0)
     else:
         color = np.array([30 / 255, 144 / 255, 255 / 255, 0.4])
     h, w = mask.shape[-2:]
