@@ -13,129 +13,90 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+@torch.inference_mode()
 def generate_sam_masks(
         image: Image.Image,
         sam_model: object,
         sam_processor: object,
         device: str,
         grid_size: int = 6,
-        mask_quality_threshold: float = 0.5,
+        mask_quality_threshold: float = 0.6,
         max_area_ratio: float = 0.4,
+        points_per_batch: int = 16,
     ) -> list[dict]:
-    """
-    Generate masks from image using SAM model.
+    """Generate proposals, encoding the image once and decoding prompts in batches.
 
-    Args:
-        image: image to generate masks for
-        sam_model: model
-        sam_processor: processor
-        device: Device to use (cuda/cpu)
-        grid_size: size of grid
-        mask_quality_threshold: quality threshold for keeping masks
+    Each grid point is an independent foreground prompt. ``points_per_batch``
+    controls decoder memory usage without changing the grid coverage.
+    Returns dictionaries containing mask, area, point, and confidence.
+    """
+    if grid_size < 1 or points_per_batch < 1:
+        raise ValueError("grid_size and points_per_batch must be positive")
 
-    Returns:
-        Tuple of (model, processor, device)
-    """
-
-    """
-    Model configurations from HuggingFace
-        'base': 'facebook/sam-vit-base',
-        'large': 'facebook/sam-vit-large',
-        'huge': 'facebook/sam-vit-huge'
-    """
-    """Generate object proposals using SAM with a grid of point prompts."""
-    
     width, height = image.size
-    
-    # Generate grid of point prompts
     x_points = np.linspace(width * 0.1, width * 0.9, grid_size)
     y_points = np.linspace(height * 0.1, height * 0.9, grid_size)
-    
+    points = [[float(x), float(y)] for x in x_points for y in y_points]
     proposals = []
     processed_masks = []
-    
     logger.info(f"Generating SAM proposals with {grid_size}x{grid_size} grid...")
-    
-    for i, x in enumerate(x_points):
-        for j, y in enumerate(y_points):
-            input_points = [[[x, y]]]
-            
-            try:
-                inputs = sam_processor(
-                    images=image,
-                    input_points=input_points,
-                    return_tensors="pt"
-                )
-                
-                inputs = {k: v.to(device) if isinstance(v, torch.Tensor) else v 
-                         for k, v in inputs.items()}
-                
-                with torch.no_grad():
-                    outputs = sam_model(**inputs)
-                
-                masks = sam_processor.image_processor.post_process_masks(
-                    outputs.pred_masks.cpu(),
-                    inputs["original_sizes"].cpu(),
-                    inputs["reshaped_input_sizes"].cpu()
-                )
-                
-                batch_masks = masks[0]
-                if len(batch_masks) == 0:
-                    continue
-                
-                point_masks = batch_masks[0]
-                if len(point_masks) == 0:
-                    continue
-                
-                # Use SAM quality scores to select the strongest mask proposal.
-                best_mask_idx = 0
-                best_score = 0.5
-                if hasattr(outputs, 'iou_scores') and outputs.iou_scores is not None:
-                    try:
-                        iou_scores = outputs.iou_scores[0][0]
-                        if len(iou_scores) > 0:
-                            best_mask_idx = torch.argmax(iou_scores).item()
-                            best_score = iou_scores[best_mask_idx].item()
-                            
-                            if best_score < mask_quality_threshold:
-                                continue
-                    except:
-                        pass
-                
-                mask = point_masks[best_mask_idx]
-                if isinstance(mask, torch.Tensor):
-                    mask_np = mask.cpu().numpy().astype(bool)
-                else:
-                    mask_np = np.array(mask).astype(bool)
 
-                # Skip masks that are too large
-                area = np.count_nonzero(mask_np)
-                area_ratio = area / mask_np.size
+    # Shape: [one image, independent prompts, one point per prompt, xy].
+    inputs = sam_processor(
+        images=image,
+        input_points=[[ [point] for point in points ]],
+        return_tensors="pt",
+    )
+    image_embeddings = sam_model.get_image_embeddings(
+        inputs["pixel_values"].to(device)
+    )
+    input_points = inputs["input_points"].to(device)
 
-                if area_ratio > max_area_ratio:
-                    continue
-                
-                # Check for duplicates
-                is_duplicate = False
-                for existing_mask in processed_masks:
-                    overlap = np.count_nonzero(mask_np & existing_mask)
-                    union = np.count_nonzero(mask_np | existing_mask)
-                    if union > 0 and overlap / union > 0.8:
-                        is_duplicate = True
-                        break
-                
-                if not is_duplicate and np.count_nonzero(mask_np) > 100:
-                    proposals.append({
-                        'mask': mask_np,
-                        'area': np.count_nonzero(mask_np),
-                        'point': [x, y],
-                        'confidence': best_score
-                    })
-                    processed_masks.append(mask_np)
-                    
-            except Exception as e:
-                logger.warning(f"Failed to do segmentation: {e}")
-    
+    for start in range(0, len(points), points_per_batch):
+        outputs = sam_model(
+            image_embeddings=image_embeddings,
+            input_points=input_points[:, start:start + points_per_batch],
+            multimask_output=True,
+            return_dict=True,
+        )
+        best_scores, best_indices = outputs.iou_scores[0].max(dim=-1)
+        keep = best_scores >= mask_quality_threshold
+        kept_indices = keep.nonzero(as_tuple=True)[0]
+        if kept_indices.numel() == 0:
+            continue
+
+        # Select one candidate per accepted prompt before transfer and upsampling.
+        selected_masks = outputs.pred_masks[0, kept_indices, best_indices[keep]]
+        masks = sam_processor.image_processor.post_process_masks(
+            selected_masks[None, :, None].cpu(),
+            inputs["original_sizes"].cpu(),
+            inputs["reshaped_input_sizes"].cpu(),
+        )[0][:, 0].numpy().astype(bool)
+        scores = best_scores[keep].cpu().tolist()
+        indices = kept_indices.cpu().tolist()
+
+        for mask_np, best_score, point_index in zip(masks, scores, indices):
+            area = np.count_nonzero(mask_np)
+            if area <= 100 or area / mask_np.size > max_area_ratio:
+                continue
+
+            is_duplicate = False
+            for existing_mask in processed_masks:
+                overlap = np.count_nonzero(mask_np & existing_mask)
+                union = np.count_nonzero(mask_np | existing_mask)
+                if union > 0 and overlap / union > 0.8:
+                    is_duplicate = True
+                    break
+
+            if not is_duplicate:
+                proposals.append({
+                    'mask': mask_np,
+                    'area': area,
+                    'point': points[start + point_index],
+                    'confidence': best_score,
+                })
+                processed_masks.append(mask_np)
+
     logger.info(f"Generated {len(proposals)} unique segment proposals")
     return proposals
 
@@ -248,6 +209,7 @@ def pipeline() -> None:
         "a photo of deep water",
         "a photo of a puddle",
         "a photo of a tree",
+        "a photo of trees",
         "a photo of a large rock",
         "a photo of a person",
         "a photo of a cliff",
