@@ -88,7 +88,7 @@ def load_clip_model(device: str|None = None) -> tuple[CLIPModel, CLIPProcessor, 
     return model, processor, str(device)
 
 
-def load_da_model(device: str|None = None) -> tuple[AutoModelForDepthEstimation, AutoImageProcessor, str]:
+def load_da_model(device: str|None = None, outdoor: bool = True) -> tuple[AutoModelForDepthEstimation, AutoImageProcessor, str]:
     """
     Load DepthAnything model from Hugging Face using transformers..
 
@@ -98,8 +98,9 @@ def load_da_model(device: str|None = None) -> tuple[AutoModelForDepthEstimation,
     Returns:
         Tuple of (model, processor, device)
     """
-
-    model_name = "LiheYoung/depth-anything-small-hf"
+    model_name = "depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf"
+    if not outdoor:
+        model_name = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
 
     logger.info(f"Loading DepthAnything model: {model_name}...")
 

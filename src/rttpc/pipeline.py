@@ -180,7 +180,7 @@ def get_image_depth(
 def image_to_world(
     image: Image.Image,
     depth: torch.Tensor,
-    camera_intrinsics: torch.Tensor | np.ndarray,
+    camera_intrinsics: list[float],
 ) -> open3d.geometry.PointCloud:
     
     width, height = image.size
@@ -193,19 +193,12 @@ def image_to_world(
     if depth_np.shape != (height, width):
         raise ValueError("Depth must have shape (image.height, image.width)")
 
-    if isinstance(camera_intrinsics, torch.Tensor):
-        camera_intrinsics = camera_intrinsics.detach().cpu().numpy()
-
-    K = np.asarray(camera_intrinsics, dtype=np.float64)
-    if K.shape != (3, 3):
-        raise ValueError("Camera intrinsics must have shape (3, 3)")
-
     intrinsic = open3d.camera.PinholeCameraIntrinsic(
         width, height,
-        fx=float(K[0, 0]),
-        fy=float(K[1, 1]),
-        cx=float(K[0, 2]),
-        cy=float(K[1, 2]),
+        fx=camera_intrinsics[0],
+        fy=camera_intrinsics[1],
+        cx=camera_intrinsics[2],
+        cy=camera_intrinsics[3],
     )
 
     rgbd = open3d.geometry.RGBDImage.create_from_color_and_depth(
@@ -268,7 +261,8 @@ def pipeline() -> None:
 
     # Future TODO: Load image from some kind of buffer maybe?
     image = Image.open("./Rellis_3D_image_example/pylon_camera_node/frame000002-1581624652_949.jpg")
-    camera_intrinsics = np.array([[2813.643275, 0., 969.285772],[0., 2808.326079, 624.049972],[0., 0., 1.]])
+    camera_intrinsics = [2813.643275, 2808.326079, 969.285772, 624.049972]
+
        
     positive_queries = [
         "a photo of a flat clear road",
@@ -293,7 +287,7 @@ def pipeline() -> None:
 
     clip_model, clip_processor, clip_device = load_clip_model()
 
-    da_model, da_processor, da_device = load_da_model()
+    da_model, da_processor, da_device = load_da_model() # Maybe want to load both indoor and outdoor models and use CLIP to select which one to use
 
     # Pre-process queries for faster scoring (shaves off roughly 1 second of processing time per image)
     safety_embeddings, trav_embeddings = prepare_text_embeddings(positive_queries, negative_queries, clip_model, clip_processor, clip_device)
@@ -337,10 +331,10 @@ def pipeline() -> None:
 
     open3d.visualization.draw_geometries(
         [pcd],
-        zoom=0.3412,
-        front=[0.4257, -0.2125, -0.8795],
-        lookat=[2.6172, 2.0475, 1.532],
-        up=[-0.0694, -0.9768, 0.2024]
+        #zoom=0.3412,
+        #front=[0.4257, -0.2125, -0.8795],
+        #lookat=[2.6172, 2.0475, 1.532],
+        #up=[-0.0694, -0.9768, 0.2024]
     )
 
 
