@@ -3,6 +3,7 @@ import torch
 import open3d
 from PIL import Image
 import time
+import matplotlib.pyplot as plt
 from load_models import load_sam_model, load_clip_model, load_da_model
 from visualization import visualize_segment_scores, visualize_traversable_segments
 
@@ -213,6 +214,13 @@ def image_to_world(
         rgbd, intrinsic
     )
 
+def process_pc(pcd: open3d.geometry.PointCloud) -> open3d.geometry.PointCloud:
+
+    pts = np.asanyarray(pcd.points)
+
+    plt.plot(pts)
+    plt.show()
+
 def prepare_text_embeddings(
         positive_queries: list[str], 
         negative_queries: list[str], 
@@ -325,9 +333,9 @@ def pipeline() -> None:
     logger.info(f"CLIP processing time: {(end_CLIP_processing_time-end_SAM_processing_time):.4f}s (avg {(end_CLIP_processing_time-end_SAM_processing_time)/len(segmentations):.4f}s per segment)")
     logger.info(f"Total processing time: {(end_CLIP_processing_time-start_processing_time):.4f}s")
 
-    logger.info("Visualizing results...")
-    visualize_segment_scores(segmentations, image)
-    visualize_traversable_segments(segmentations, image)
+    #logger.info("Visualizing results...")
+    #visualize_segment_scores(segmentations, image)
+    #visualize_traversable_segments(segmentations, image)
 
     open3d.visualization.draw_geometries(
         [pcd],
@@ -337,6 +345,8 @@ def pipeline() -> None:
         #up=[-0.0694, -0.9768, 0.2024]
     )
 
+    process_pc(pcd)
+    
 
 def main() -> None:
     pipeline()
