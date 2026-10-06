@@ -182,7 +182,7 @@ def image_to_world(
     image: Image.Image,
     depth: torch.Tensor,
     camera_intrinsics: list[float],
-) -> open3d.geometry.PointCloud:
+) -> tuple[open3d.geometry.PointCloud, np.ndarray]:
     
     width, height = image.size
 
@@ -194,32 +194,69 @@ def image_to_world(
     if depth_np.shape != (height, width):
         raise ValueError("Depth must have shape (image.height, image.width)")
 
-    intrinsic = open3d.camera.PinholeCameraIntrinsic(
-        width, height,
-        fx=camera_intrinsics[0],
-        fy=camera_intrinsics[1],
-        cx=camera_intrinsics[2],
-        cy=camera_intrinsics[3],
+    # Construct points and their pixel mapping together so skipped depths cannot
+    # shift the correspondence. Depth is already in metres.
+    pixel_indices = np.flatnonzero(np.isfinite(depth_np) & (depth_np > 0))
+    v, u = np.unravel_index(pixel_indices, (height, width))
+    z = depth_np.ravel()[pixel_indices].astype(np.float64)
+    fx, fy, cx, cy = camera_intrinsics
+    points = np.column_stack(((u - cx) * z / fx, (v - cy) * z / fy, z))
+
+    pcd = open3d.geometry.PointCloud()
+    pcd.points = open3d.utility.Vector3dVector(points)
+    pcd.colors = open3d.utility.Vector3dVector(
+        color_np.reshape(-1, 3)[pixel_indices] / 255.0
     )
 
-    rgbd = open3d.geometry.RGBDImage.create_from_color_and_depth(
-        open3d.geometry.Image(color_np),
-        open3d.geometry.Image(depth_np),
-        depth_scale=1.0,           # Input already in metres
-        depth_trunc=float("inf"), # Keep distant points
-        convert_rgb_to_intensity=False,
+    return pcd, pixel_indices
+
+def get_ground_plane(pcd: open3d.geometry.PointCloud) -> tuple[float]:
+
+    candidates = pcd
+
+    coarse = candidates.voxel_down_sample(voxel_size=0.10)
+
+    if len(coarse.points) < 3:
+        raise ValueError("Not enough points to fit a plane")
+
+    # detect_planar_patches may be more robust and also might not limit us to a single ground plane
+    plane, inliers = coarse.segment_plane(
+        distance_threshold=0.20, # Within 10 cm of plane
+        ransac_n=3, # three points define a plane
+        num_iterations=500,
+        probability=0.999,
     )
 
-    return open3d.geometry.PointCloud.create_from_rgbd_image(
-        rgbd, intrinsic
-    )
+    # Plane sanity checks (should be reasonable)
+    a, b, c, d = plane
+    sus = False
+    if abs(a) > 0.5: sus = True # ~ tilt along z axis
+    if abs(b) < 0.0: sus = True # ~ tilt along x axis
+    if abs(c) > 0.5: sus = True # ~ also tilt along x axis
+    if d > 0: sus = True # ground should not be a the same height as the camera
 
-def process_pc(pcd: open3d.geometry.PointCloud) -> open3d.geometry.PointCloud:
+    if sus: print("RANSAC plane has some HEAVY tilt")
 
-    pts = np.asanyarray(pcd.points)
+    #plane_points = coarse.select_by_index(inliers)
+    #other_points = coarse.select_by_index(inliers, invert=True)
 
-    plt.plot(pts)
-    plt.show()
+    return plane
+
+def gather_ground_indices(
+        pcd: open3d.geometry.PointCloud, 
+        plane: tuple[float], 
+        distance_threshold: float = 0.2,
+    ) -> np.ndarray:
+    
+    a,b,c,d = plane
+    # Convert point cloud to numpy array
+    points = np.asarray(pcd.points)
+
+    # Calculate distance from each point to the plane
+    distances = np.abs(a * points[:, 0] + b * points[:, 1] + c * points[:, 2] + d)
+    indices = np.where(distances <= distance_threshold)[0]
+
+    return indices
 
 def prepare_text_embeddings(
         positive_queries: list[str], 
@@ -303,22 +340,27 @@ def pipeline() -> None:
     logger.info(f"All models loaded.")
 
     # Depth time :)
-    start_processing_time = time.time()
+    start_processing_time = time.perf_counter()
 
     depth = get_image_depth(image, da_model, da_processor, da_device)
 
-    pcd = image_to_world(image, depth, camera_intrinsics)
+    pcd, pixel_indices = image_to_world(image, depth, camera_intrinsics)
 
-    end_da_processing_time = time.time()
+    plane = get_ground_plane(pcd)
+        
+    ground_indices = gather_ground_indices(pcd, plane)
+
+    end_da_processing_time = time.perf_counter()
 
     logger.info(f"DepthAnything processing time: {(end_da_processing_time-start_processing_time):.4f}s")
 
     # SAM time :D
     segmentations = generate_sam_masks(image, sam_model, sam_processor, sam_device)
 
-    end_SAM_processing_time = time.time()
+    end_SAM_processing_time = time.perf_counter()
     logger.info(f"SAM processing time: {(end_SAM_processing_time-end_da_processing_time):.4f}s")
 
+    trav_pcd: list[open3d.geometry.PointCloud] = list()
     for segment in segmentations:
         mask = segment["mask"]
     
@@ -327,29 +369,34 @@ def pipeline() -> None:
         segment["trav_score"] = segment["clip_score"] # * segment["confidence"]
         #visualize_segment_scores([segment], image)
 
-        # TODO: maybe mask using depth? far away stuff should be more uncertain (lower resolution)
+        if segment["trav_score"] is not None and segment["trav_score"] > 0.01:
+            # Sample the image mask at each ground point's source pixel, then
+            # retain the corresponding indices into the original cloud.
+            keep = mask.ravel()[pixel_indices[ground_indices]]
+            trav_indices = ground_indices[keep]
+            trav_pcd.append(pcd.select_by_index(trav_indices))
+        # TODO: use depth information with mask to generate pointcloud for masks over score threshold
 
-    end_CLIP_processing_time = time.time()
+    end_CLIP_processing_time = time.perf_counter()
     logger.info(f"CLIP processing time: {(end_CLIP_processing_time-end_SAM_processing_time):.4f}s (avg {(end_CLIP_processing_time-end_SAM_processing_time)/len(segmentations):.4f}s per segment)")
+    
     logger.info(f"Total processing time: {(end_CLIP_processing_time-start_processing_time):.4f}s")
 
     #logger.info("Visualizing results...")
-    #visualize_segment_scores(segmentations, image)
-    #visualize_traversable_segments(segmentations, image)
-
+    visualize_segment_scores(segmentations, image)
+    visualize_traversable_segments(segmentations, image)
+    """
     open3d.visualization.draw_geometries(
-        [pcd],
+        [pcd, pcd.select_by_index[ground_indices].paint_uniform_color([1,0,0])],
         #zoom=0.3412,
         #front=[0.4257, -0.2125, -0.8795],
         #lookat=[2.6172, 2.0475, 1.532],
         #up=[-0.0694, -0.9768, 0.2024]
     )
+    """
+    trav_pcd.insert(0,pcd.paint_uniform_color([1,0,0]))
+    open3d.visualization.draw_geometries(trav_pcd)
 
-    process_pc(pcd)
-    
-
-def main() -> None:
-    pipeline()
 
 if __name__=="__main__":
-    main()
+    pipeline()

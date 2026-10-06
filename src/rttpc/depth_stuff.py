@@ -15,7 +15,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def get_ground_plane(pcd: open3d.geometry.PointCloud) -> tuple[open3d.geometry.PointCloud]:
+def get_ground_plane(pcd: open3d.geometry.PointCloud) -> tuple[float]:
 
     candidates = pcd
 
@@ -24,6 +24,7 @@ def get_ground_plane(pcd: open3d.geometry.PointCloud) -> tuple[open3d.geometry.P
     if len(coarse.points) < 3:
         raise ValueError("Not enough points to fit a plane")
 
+    # detect_planar_patches may be more robust and also might not limit us to a single ground plane
     plane, inliers = coarse.segment_plane(
         distance_threshold=0.10, # Within 10 cm of plane
         ransac_n=3, # three points define a plane
@@ -41,10 +42,26 @@ def get_ground_plane(pcd: open3d.geometry.PointCloud) -> tuple[open3d.geometry.P
 
     if sus: print("RANSAC plane has some HEAVY tilt")
 
-    plane_points = coarse.select_by_index(inliers)
-    other_points = coarse.select_by_index(inliers, invert=True)
+    #plane_points = coarse.select_by_index(inliers)
+    #other_points = coarse.select_by_index(inliers, invert=True)
 
-    return plane_points, other_points
+    return plane
+
+def gather_ground_pts(
+        pcd: open3d.geometry.PointCloud, 
+        plane: tuple[float], 
+        distance_threshold: float = 0.2,
+    ) -> open3d.geometry.PointCloud:
+    
+    a,b,c,d = plane
+    # Convert point cloud to numpy array
+    points = np.asarray(pcd.points)
+
+    # Calculate distance from each point to the plane
+    distances = np.abs(a * points[:, 0] + b * points[:, 1] + c * points[:, 2] + d)
+    indices = np.where(distances <= distance_threshold)[0]
+
+    return pcd.select_by_index(indices)
 
 def main() -> None:
 
@@ -63,11 +80,13 @@ def main() -> None:
 
     pcd: open3d.geometry.PointCloud = image_to_world(image, depth, camera_intrinsics)
 
-    plane_points, other_points = get_ground_plane(pcd)
+    plane = get_ground_plane(pcd)
+
+    ground_pcd = gather_ground_pts(pcd, plane)
 
     logger.info(f"Total processing time: {(time.time()-start_processing_time):.4f}s")
 
-    open3d.visualization.draw_geometries([plane_points.paint_uniform_color([1, 0 ,0]), other_points])
+    open3d.visualization.draw_geometries([ground_pcd])
 
 if __name__=="__main__":
     main()
