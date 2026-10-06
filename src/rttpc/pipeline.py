@@ -6,6 +6,7 @@ import time
 import matplotlib.pyplot as plt
 from load_models import load_sam_model, load_clip_model, load_da_model
 from visualization import visualize_segment_scores, visualize_traversable_segments
+from trav_map import TraversabilityMap
 
 import logging
 logging.basicConfig(
@@ -146,7 +147,10 @@ def score_with_clip(
 
         positive_score = max(image_features @ t for t in positive_embeddings)
         negative_score = max(image_features @ t for t in negative_embeddings)
-        return positive_score - negative_score
+
+        # The strongest score, either positive or negative, is returned. Like, we assume if the strongest negative result is weaker than the
+        # strongest positive result, it is less likely to be a hazard
+        return positive_score if positive_score - negative_score > 0 else -negative_score
         
     except Exception as e:
         logger.error(f"Failed to extract CLIP features: {e}")
@@ -195,7 +199,7 @@ def image_to_world(
         raise ValueError("Depth must have shape (image.height, image.width)")
 
     # Construct points and their pixel mapping together so skipped depths cannot
-    # shift the correspondence. Depth is already in metres.
+    # shift the correspondence
     pixel_indices = np.flatnonzero(np.isfinite(depth_np) & (depth_np > 0))
     v, u = np.unravel_index(pixel_indices, (height, width))
     z = depth_np.ravel()[pixel_indices].astype(np.float64)
@@ -235,7 +239,7 @@ def get_ground_plane(pcd: open3d.geometry.PointCloud) -> tuple[float]:
     if abs(c) > 0.5: sus = True # ~ also tilt along x axis
     if d > 0: sus = True # ground should not be a the same height as the camera
 
-    if sus: print("RANSAC plane has some HEAVY tilt")
+    if sus: logger.warning("RANSAC plane has some HEAVY tilt!")
 
     #plane_points = coarse.select_by_index(inliers)
     #other_points = coarse.select_by_index(inliers, invert=True)
@@ -364,18 +368,16 @@ def pipeline() -> None:
     for segment in segmentations:
         mask = segment["mask"]
     
-        segment["clip_score"] = score_with_clip(image, mask, clip_model, clip_processor, clip_device, safety_embeddings, trav_embeddings)
-        # TODO: Maybe scale final CLIP score with SAM confidence? Example:
-        segment["trav_score"] = segment["clip_score"] # * segment["confidence"]
+        segment["trav_score"] = 100 * score_with_clip(image, mask, clip_model, clip_processor, clip_device, safety_embeddings, trav_embeddings)
         #visualize_segment_scores([segment], image)
-
+    
         if segment["trav_score"] is not None and segment["trav_score"] > 0.01:
             # Sample the image mask at each ground point's source pixel, then
             # retain the corresponding indices into the original cloud.
             keep = mask.ravel()[pixel_indices[ground_indices]]
             trav_indices = ground_indices[keep]
             trav_pcd.append(pcd.select_by_index(trav_indices))
-        # TODO: use depth information with mask to generate pointcloud for masks over score threshold
+
 
     end_CLIP_processing_time = time.perf_counter()
     logger.info(f"CLIP processing time: {(end_CLIP_processing_time-end_SAM_processing_time):.4f}s (avg {(end_CLIP_processing_time-end_SAM_processing_time)/len(segmentations):.4f}s per segment)")
