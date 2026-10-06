@@ -4,9 +4,10 @@ import open3d
 from PIL import Image
 import time
 import matplotlib.pyplot as plt
-from load_models import load_sam_model, load_clip_model, load_da_model
-from visualization import visualize_segment_scores, visualize_traversable_segments
-from trav_map import TraversabilityMap
+
+from rttpc.load_models import load_sam_model, load_clip_model, load_da_model
+from rttpc.visualization import visualize_segment_scores, visualize_traversable_segments
+from rttpc.trav_map import TraversabilityMap
 
 import logging
 logging.basicConfig(
@@ -306,11 +307,37 @@ def prepare_text_embeddings(
 
     return positive_embeddings, negative_embeddings
 
+# https://www.johndcook.com/blog/2025/05/07/quaternions-and-rotation-matrices/
+def quaternion_to_rotation_matrix(q):
+    q0, q1, q2, q3 = q
+    return np.array([
+        [2*(q0**2 + q1**2) - 1, 2*(q1*q2 - q0*q3), 2*(q1*q3 + q0*q2)],
+        [2*(q1*q2 + q0*q3), 2*(q0**2 + q2**2) - 1, 2*(q2*q3 - q0*q1)],
+        [2*(q1*q3 - q0*q2), 2*(q2*q3 + q0*q1), 2*(q0**2 + q3**2) - 1]
+    ])
+
 def pipeline() -> None:
 
-    # Future TODO: Load image from some kind of buffer maybe?
+    # Future TODO: Load image from some kind of buffer maybe? (for testing)
     image = Image.open("./Rellis_3D_image_example/pylon_camera_node/frame000002-1581624652_949.jpg")
     camera_intrinsics = [2813.643275, 2808.326079, 969.285772, 624.049972]
+    """
+    q:
+        w: -0.50507811
+        x: 0.51206185
+        y: 0.49024953
+        z: -0.49228464
+    t:
+        x: -0.13165462
+        y: 0.03870398
+        z: -0.17253834
+    """
+    T_cam2lidar = np.eye(4)
+    T_cam2lidar = quaternion_to_rotation_matrix([-0.50507811, 0.51206185, 0.49024953, -0.49228464])
+    T_cam2lidar[0,3] = -0.13165462
+    T_cam2lidar[1,3] = 0.03870398
+    T_cam2lidar[2,3] = -0.17253834
+    
 
        
     positive_queries = [
