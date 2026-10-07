@@ -6,7 +6,7 @@ import time
 import matplotlib.pyplot as plt
 
 from rttpc.load_models import load_sam_model, load_clip_model, load_da_model
-from rttpc.visualization import visualize_segment_scores, visualize_traversable_segments
+from rttpc.visualization import show_traversability, visualize_segment_scores, visualize_traversable_segments
 from rttpc.trav_map import TraversabilityMap
 
 import logging
@@ -308,7 +308,7 @@ def prepare_text_embeddings(
     return positive_embeddings, negative_embeddings
 
 # https://www.johndcook.com/blog/2025/05/07/quaternions-and-rotation-matrices/
-def quaternion_to_rotation_matrix(q):
+def quaternion_to_rotation_matrix(q: tuple[float] | list[float]) -> np.ndarray:
     q0, q1, q2, q3 = q
     return np.array([
         [2*(q0**2 + q1**2) - 1, 2*(q1*q2 - q0*q3), 2*(q1*q3 + q0*q2)],
@@ -316,10 +316,19 @@ def quaternion_to_rotation_matrix(q):
         [2*(q1*q3 - q0*q2), 2*(q2*q3 + q0*q1), 2*(q0**2 + q3**2) - 1]
     ])
 
+def world_coords_to_map_indices(points_world: np.ndarray, grid: TraversabilityMap) -> tuple[np.ndarray[int]]:
+    col = np.floor((points_world[:, 0] - grid.offset_x) / grid.resolution).astype(int)
+    row = np.floor((points_world[:, 1] - grid.offset_y) / grid.resolution).astype(int)
+    return (row, col)
+
+
 def pipeline() -> None:
 
     # Future TODO: Load image from some kind of buffer maybe? (for testing)
-    image = Image.open("./Rellis_3D_image_example/pylon_camera_node/frame000002-1581624652_949.jpg")
+    image = Image.open(
+        #"./Rellis_3D_image_example/pylon_camera_node/frame000002-1581624652_949.jpg"
+        "./Rellis_3D_image_example/pylon_camera_node/frame000000-1581623790_349.jpg"
+    )
     camera_intrinsics = [2813.643275, 2808.326079, 969.285772, 624.049972]
     """
     q:
@@ -333,7 +342,7 @@ def pipeline() -> None:
         z: -0.17253834
     """
     T_cam2lidar = np.eye(4)
-    T_cam2lidar = quaternion_to_rotation_matrix([-0.50507811, 0.51206185, 0.49024953, -0.49228464])
+    T_cam2lidar[0:3,0:3] = quaternion_to_rotation_matrix([-0.50507811, 0.51206185, 0.49024953, -0.49228464])
     T_cam2lidar[0,3] = -0.13165462
     T_cam2lidar[1,3] = 0.03870398
     T_cam2lidar[2,3] = -0.17253834
@@ -370,6 +379,16 @@ def pipeline() -> None:
 
     logger.info(f"All models loaded.")
 
+    # Initialize map
+    trav_map = TraversabilityMap(
+        h = 96,
+        w = 96,
+        offset_x = 48,
+        offset_y = 48,
+        resolution= 0.10,
+        decay_time=3.0
+    )
+
     # Depth time :)
     start_processing_time = time.perf_counter()
 
@@ -391,7 +410,6 @@ def pipeline() -> None:
     end_SAM_processing_time = time.perf_counter()
     logger.info(f"SAM processing time: {(end_SAM_processing_time-end_da_processing_time):.4f}s")
 
-    trav_pcd: list[open3d.geometry.PointCloud] = list()
     for segment in segmentations:
         mask = segment["mask"]
     
@@ -403,29 +421,30 @@ def pipeline() -> None:
             # retain the corresponding indices into the original cloud.
             keep = mask.ravel()[pixel_indices[ground_indices]]
             trav_indices = ground_indices[keep]
-            trav_pcd.append(pcd.select_by_index(trav_indices))
-
+            trav_pcd = pcd.select_by_index(trav_indices).transform(T_cam2lidar)
+            # Transform trav_pcd into world frame (skipped for now, robot->world will be defined later)
+            points_world = trav_pcd.transform(T_cam2lidar)
+            map_indices = world_coords_to_map_indices(np.asarray(points_world.points), trav_map)
+            # Right now, we just overwrite cells directly. Realistically, I'd rather add the scores to already existing scores to increase the confidence,
+            # since multiple observations should make us more confident. 
+            trav_map[map_indices] = segment["trav_score"]
 
     end_CLIP_processing_time = time.perf_counter()
     logger.info(f"CLIP processing time: {(end_CLIP_processing_time-end_SAM_processing_time):.4f}s (avg {(end_CLIP_processing_time-end_SAM_processing_time)/len(segmentations):.4f}s per segment)")
     
     logger.info(f"Total processing time: {(end_CLIP_processing_time-start_processing_time):.4f}s")
 
-    #logger.info("Visualizing results...")
+    logger.info("Visualizing results...")
     visualize_segment_scores(segmentations, image)
     visualize_traversable_segments(segmentations, image)
-    """
     open3d.visualization.draw_geometries(
-        [pcd, pcd.select_by_index[ground_indices].paint_uniform_color([1,0,0])],
+        [pcd, pcd.select_by_index(ground_indices).paint_uniform_color([1,0,0])],
         #zoom=0.3412,
         #front=[0.4257, -0.2125, -0.8795],
         #lookat=[2.6172, 2.0475, 1.532],
         #up=[-0.0694, -0.9768, 0.2024]
     )
-    """
-    trav_pcd.insert(0,pcd.paint_uniform_color([1,0,0]))
-    open3d.visualization.draw_geometries(trav_pcd)
-
+    show_traversability(trav_map)
 
 if __name__=="__main__":
     pipeline()

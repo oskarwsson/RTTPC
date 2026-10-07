@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
+from matplotlib.colors import LinearSegmentedColormap
 from PIL import Image
 import gc
 
@@ -47,3 +48,33 @@ def visualize_segment_scores(segments: list[dict], raw_image: Image.Image) -> No
     plt.show()
     #del mask
     #gc.collect()
+
+
+def show_traversability(grid):
+    cmap = LinearSegmentedColormap.from_list(
+        "traversability", ["#082818", "#63ef88"]
+    )
+    cmap.set_bad("#909090")
+
+    rows, cols = grid.data.shape
+    extent = (
+        grid.offset_x,
+        grid.offset_x + cols * grid.resolution,
+        grid.offset_y,
+        grid.offset_y + rows * grid.resolution,
+    )
+
+    fig, ax = plt.subplots()
+    img = ax.imshow(
+        np.ma.masked_less(grid.data, 0),
+        cmap=cmap,
+        vmin=0,
+        vmax=100,
+        origin="lower",
+        extent=extent,
+        interpolation="nearest",
+        aspect="equal",
+    )
+    fig.colorbar(img, ax=ax, label="Traversability")
+    ax.set(xlabel="x [m]", ylabel="y [m]")
+    plt.show()
