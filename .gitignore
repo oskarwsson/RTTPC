@@ -1,3 +1,4 @@
-# pixi environments
-.pixi/*
-!.pixi/config.toml
+.ipynb*
+Rellis_3D*
+Rellis-3D*
+__pycache__

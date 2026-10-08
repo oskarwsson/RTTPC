@@ -1,0 +1,80 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
+from matplotlib.colors import LinearSegmentedColormap
+from PIL import Image
+import gc
+
+
+def show_mask(mask: np.ndarray, ax: Axes, random_color: bool = False):
+    if random_color:
+        color = np.concatenate([np.random.random(3), np.array([0.5])], axis=0)
+    else:
+        color = np.array([30 / 255, 144 / 255, 255 / 255, 0.4])
+    h, w = mask.shape[-2:]
+    mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
+    ax.imshow(mask_image)
+    del mask
+    gc.collect()
+
+
+def show_score(point: list[int], score: float, ax: Axes):
+    x,y, = point
+    ax.text(x,y,f"{score:.2f}")
+
+
+def visualize_traversable_segments(segments: list[dict], raw_image: Image.Image, threshold: float = 0.01) -> None:
+    plt.imshow(np.array(raw_image))
+    ax = plt.gca()
+    ax.set_autoscale_on(False)
+    for segment in segments:
+        if segment['trav_score'] > threshold:
+            show_mask(segment['mask'], ax, random_color=True)
+            show_score(segment['point'], segment['trav_score'], ax)
+    plt.axis("off")
+    plt.show()
+    #del mask
+    #gc.collect()
+
+
+def visualize_segment_scores(segments: list[dict], raw_image: Image.Image) -> None:
+    plt.imshow(np.array(raw_image))
+    ax = plt.gca()
+    ax.set_autoscale_on(False)
+    for segment in segments:
+        show_mask(segment['mask'], ax, random_color=True)
+        show_score(segment['point'], segment['trav_score'], ax)
+    plt.axis("off")
+    plt.show()
+    #del mask
+    #gc.collect()
+
+
+def show_traversability(grid):
+    cmap = LinearSegmentedColormap.from_list(
+        "traversability", ["#082818", "#63ef88"]
+    )
+    cmap.set_bad("#909090")
+
+    rows, cols = grid.data.shape
+    extent = (
+        grid.offset_x,
+        grid.offset_x + cols * grid.resolution,
+        grid.offset_y,
+        grid.offset_y + rows * grid.resolution,
+    )
+
+    fig, ax = plt.subplots()
+    img = ax.imshow(
+        np.ma.masked_less(grid.data, 0),
+        cmap=cmap,
+        vmin=0,
+        vmax=100,
+        origin="lower",
+        extent=extent,
+        interpolation="nearest",
+        aspect="equal",
+    )
+    fig.colorbar(img, ax=ax, label="Traversability")
+    ax.set(xlabel="x [m]", ylabel="y [m]")
+    plt.show()
