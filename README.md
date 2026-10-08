@@ -64,14 +64,14 @@ Then, in the listed directory, find ``kernel.json`` and add this field:
 ```
 To find the path above, you can run
 ```bash
-echo $LD_LIBRARY_PATH
+echo $HOME/.local/open3d-libs/usr/lib/x86_64-linux-gnu
 ```
-and copy the relevant part of the output. It should look something like this in the end:
+and copy the output. It should look something like this in the end:
 ```json
 "env": {
   "LD_LIBRARY_PATH": "/home/jovyan/.local/open3d-libs/usr/lib/x86_64-linux-gnu"
 }
 ```
-
+(but with your username, of course)
 ## Running
 Just do it
