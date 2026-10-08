@@ -326,8 +326,8 @@ def pipeline() -> None:
 
     # Future TODO: Load image from some kind of buffer maybe? (for testing)
     image = Image.open(
-        #"./Rellis_3D_image_example/pylon_camera_node/frame000002-1581624652_949.jpg"
-        "./Rellis_3D_image_example/pylon_camera_node/frame000000-1581623790_349.jpg"
+        "./Rellis_3D_image_example/pylon_camera_node/frame000002-1581624652_949.jpg"
+        #"./Rellis_3D_image_example/pylon_camera_node/frame000000-1581623790_349.jpg"
     )
     camera_intrinsics = [2813.643275, 2808.326079, 969.285772, 624.049972]
     """
@@ -346,6 +346,9 @@ def pipeline() -> None:
     T_cam2lidar[0,3] = -0.13165462
     T_cam2lidar[1,3] = 0.03870398
     T_cam2lidar[2,3] = -0.17253834
+
+    T_lidar2base = np.diag([-1.0, 1.0, -1.0, 1.0])
+    T_cam2base = T_lidar2base @ T_cam2lidar
     
 
        
@@ -383,8 +386,8 @@ def pipeline() -> None:
     trav_map = TraversabilityMap(
         h = 96,
         w = 96,
-        offset_x = 48,
-        offset_y = 48,
+        offset_x = -48, # 0 at map center
+        offset_y = -48, # 0 at map center
         resolution= 0.10,
         decay_time=3.0
     )
@@ -396,7 +399,14 @@ def pipeline() -> None:
 
     pcd, pixel_indices = image_to_world(image, depth, camera_intrinsics)
 
-    plane = get_ground_plane(pcd)
+    # Fit only nearby points in the bottom half of the image to avoid sky.
+    ground_fit_min_row = 0.5 * image.height
+    ground_fit_max_depth = 20.0  # metres (camera z)
+    fit_mask = (
+        (pixel_indices // image.width >= ground_fit_min_row)
+        & (np.asarray(pcd.points)[:, 2] <= ground_fit_max_depth)
+    )
+    plane = get_ground_plane(pcd.select_by_index(np.flatnonzero(fit_mask)))
         
     ground_indices = gather_ground_indices(pcd, plane)
 
@@ -410,6 +420,7 @@ def pipeline() -> None:
     end_SAM_processing_time = time.perf_counter()
     logger.info(f"SAM processing time: {(end_SAM_processing_time-end_da_processing_time):.4f}s")
 
+    viz_pcd = open3d.geometry.PointCloud()
     for segment in segmentations:
         mask = segment["mask"]
     
@@ -421,13 +432,15 @@ def pipeline() -> None:
             # retain the corresponding indices into the original cloud.
             keep = mask.ravel()[pixel_indices[ground_indices]]
             trav_indices = ground_indices[keep]
-            trav_pcd = pcd.select_by_index(trav_indices).transform(T_cam2lidar)
+            trav_pcd = pcd.select_by_index(trav_indices)
             # Transform trav_pcd into world frame (skipped for now, robot->world will be defined later)
-            points_world = trav_pcd.transform(T_cam2lidar)
+            points_world = trav_pcd.transform(T_cam2base)
             map_indices = world_coords_to_map_indices(np.asarray(points_world.points), trav_map)
             # Right now, we just overwrite cells directly. Realistically, I'd rather add the scores to already existing scores to increase the confidence,
             # since multiple observations should make us more confident. 
             trav_map[map_indices] = segment["trav_score"]
+
+            viz_pcd.points.extend(points_world.points)
 
     end_CLIP_processing_time = time.perf_counter()
     logger.info(f"CLIP processing time: {(end_CLIP_processing_time-end_SAM_processing_time):.4f}s (avg {(end_CLIP_processing_time-end_SAM_processing_time)/len(segmentations):.4f}s per segment)")
@@ -437,14 +450,10 @@ def pipeline() -> None:
     logger.info("Visualizing results...")
     visualize_segment_scores(segmentations, image)
     visualize_traversable_segments(segmentations, image)
-    open3d.visualization.draw_geometries(
-        [pcd, pcd.select_by_index(ground_indices).paint_uniform_color([1,0,0])],
-        #zoom=0.3412,
-        #front=[0.4257, -0.2125, -0.8795],
-        #lookat=[2.6172, 2.0475, 1.532],
-        #up=[-0.0694, -0.9768, 0.2024]
-    )
-    show_traversability(trav_map)
+    open3d.visualization.draw_geometries([pcd.transform(T_cam2base), viz_pcd.paint_uniform_color([0,1,0])])
+
+    pose = (0,0,0)
+    show_traversability(trav_map, pose)
 
 if __name__=="__main__":
     pipeline()
