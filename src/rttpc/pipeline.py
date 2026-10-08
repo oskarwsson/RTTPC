@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import torch
 import open3d
@@ -322,13 +324,28 @@ def world_coords_to_map_indices(points_world: np.ndarray, grid: TraversabilityMa
     return (row, col)
 
 
-def pipeline() -> None:
+def pipeline(
+    image_path: str | Path = "./Rellis_3D_image_example/pylon_camera_node/frame000000-1581623790_349.jpg",
+    *,
+    show_native_gui: bool = True,
+) -> dict:
+    """Run the existing single-image experiment.
 
-    # Future TODO: Load image from some kind of buffer maybe? (for testing)
-    image = Image.open(
-        #"./Rellis_3D_image_example/pylon_camera_node/frame000002-1581624652_949.jpg"
-        "./Rellis_3D_image_example/pylon_camera_node/frame000000-1581623790_349.jpg"
-    )
+    Relative image paths use the caller's working directory. Disable the native
+    Open3D window in Jupyter and select its inline Matplotlib backend before
+    calling. Calibration, models, scoring, and map computation remain fixed.
+    Returns image, depth, point cloud/pixel mapping, plane, ground indices,
+    segmentations, traversability map, and the existing calibration.
+    """
+    image_path = Path(image_path).expanduser()
+    if not image_path.is_file():
+        raise FileNotFoundError(
+            f"Pipeline input not found: {image_path.resolve()}. "
+            "Provide the original RELLIS image; calibration is fixed in pipeline()."
+        )
+    # Decode before loading models, so corrupt/missing input fails early.
+    with Image.open(image_path) as source_image:
+        image = source_image.copy()
     camera_intrinsics = [2813.643275, 2808.326079, 969.285772, 624.049972]
     """
     q:
@@ -413,7 +430,13 @@ def pipeline() -> None:
     for segment in segmentations:
         mask = segment["mask"]
     
-        segment["trav_score"] = 100 * score_with_clip(image, mask, clip_model, clip_processor, clip_device, safety_embeddings, trav_embeddings)
+        raw_score = score_with_clip(image, mask, clip_model, clip_processor, clip_device, safety_embeddings, trav_embeddings)
+        if raw_score is None or not np.isfinite(raw_score):
+            raise ValueError(
+                "CLIP returned an invalid score; see the logged scoring error. "
+                "Stopping rather than mapping an invalid observation."
+            )
+        segment["trav_score"] = 100 * raw_score
         #visualize_segment_scores([segment], image)
     
         if segment["trav_score"] is not None and segment["trav_score"] > 0.01:
@@ -430,21 +453,39 @@ def pipeline() -> None:
             trav_map[map_indices] = segment["trav_score"]
 
     end_CLIP_processing_time = time.perf_counter()
-    logger.info(f"CLIP processing time: {(end_CLIP_processing_time-end_SAM_processing_time):.4f}s (avg {(end_CLIP_processing_time-end_SAM_processing_time)/len(segmentations):.4f}s per segment)")
+    clip_elapsed = end_CLIP_processing_time - end_SAM_processing_time
+    if segmentations:
+        logger.info(f"CLIP processing time: {clip_elapsed:.4f}s (avg {clip_elapsed/len(segmentations):.4f}s per segment)")
+    else:
+        logger.info("No accepted SAM masks; CLIP scoring and map updates skipped.")
     
     logger.info(f"Total processing time: {(end_CLIP_processing_time-start_processing_time):.4f}s")
 
     logger.info("Visualizing results...")
+    # Separate figures also keep the two overlays distinct with an inline backend.
+    plt.figure()
     visualize_segment_scores(segmentations, image)
+    plt.figure()
     visualize_traversable_segments(segmentations, image)
-    open3d.visualization.draw_geometries(
-        [pcd, pcd.select_by_index(ground_indices).paint_uniform_color([1,0,0])],
-        #zoom=0.3412,
-        #front=[0.4257, -0.2125, -0.8795],
-        #lookat=[2.6172, 2.0475, 1.532],
-        #up=[-0.0694, -0.9768, 0.2024]
-    )
+    if show_native_gui:
+        open3d.visualization.draw_geometries(
+            [pcd, pcd.select_by_index(ground_indices).paint_uniform_color([1,0,0])],
+        )
     show_traversability(trav_map)
+
+    return {
+        "image_path": image_path.resolve(),
+        "image": image,
+        "depth": depth,
+        "pcd": pcd,
+        "pixel_indices": pixel_indices,
+        "plane": plane,
+        "ground_indices": ground_indices,
+        "segmentations": segmentations,
+        "trav_map": trav_map,
+        "camera_intrinsics": camera_intrinsics,
+        "T_cam2lidar": T_cam2lidar,
+    }
 
 if __name__=="__main__":
     pipeline()
