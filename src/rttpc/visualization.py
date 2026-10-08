@@ -50,7 +50,7 @@ def visualize_segment_scores(segments: list[dict], raw_image: Image.Image) -> No
     #gc.collect()
 
 
-def show_traversability(grid):
+def show_traversability(grid, robot_pose: tuple[float] | list[float] = (0,0,0)):
     cmap = LinearSegmentedColormap.from_list(
         "traversability", ["#082818", "#63ef88"]
     )
@@ -77,4 +77,17 @@ def show_traversability(grid):
     )
     fig.colorbar(img, ax=ax, label="Traversability")
     ax.set(xlabel="x [m]", ylabel="y [m]")
+
+    # Show robot pose
+    x,y,yaw = robot_pose
+    arrow_length = 4.0  # metres
+
+    ax.annotate(
+        "",
+        xy=(x + arrow_length * np.cos(yaw),
+            y + arrow_length * np.sin(yaw)),
+        xytext=(x, y),
+        arrowprops=dict(arrowstyle="->", color="red", lw=2),
+    )
+    ax.plot(x, y, "ro", markersize=8)
     plt.show()
