@@ -308,13 +308,7 @@ def prepare_text_embeddings(
     return positive_embeddings, negative_embeddings
 
 # https://www.johndcook.com/blog/2025/05/07/quaternions-and-rotation-matrices/
-def quaternion_to_rotation_matrix(q: tuple[float] | list[float]) -> np.ndarray:
-    q0, q1, q2, q3 = q
-    return np.array([
-        [2*(q0**2 + q1**2) - 1, 2*(q1*q2 - q0*q3), 2*(q1*q3 + q0*q2)],
-        [2*(q1*q2 + q0*q3), 2*(q0**2 + q2**2) - 1, 2*(q2*q3 - q0*q1)],
-        [2*(q1*q3 - q0*q2), 2*(q2*q3 + q0*q1), 2*(q0**2 + q3**2) - 1]
-    ])
+
 
 def world_coords_to_map_indices(points_world: np.ndarray, grid: TraversabilityMap) -> tuple[np.ndarray[int]]:
     col = np.floor((points_world[:, 0] - grid.offset_x) / grid.resolution).astype(int)
