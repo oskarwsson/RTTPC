@@ -5,8 +5,8 @@ from PIL import Image
 import time
 import matplotlib.pyplot as plt
 
-from rttpc.load_models import load_sam_model, load_clip_model, load_da_model
-from rttpc.visualization import show_traversability, visualize_segment_scores, visualize_traversable_segments
+from rttpc.load_models import *
+from rttpc.visualization import *
 from rttpc.trav_map import TraversabilityMap
 
 import logging

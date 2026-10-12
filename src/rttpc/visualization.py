@@ -5,6 +5,22 @@ from matplotlib.colors import LinearSegmentedColormap
 from PIL import Image
 import gc
 
+def visualize_processing_times(processing_times: dict[str, list[float]]):
+    # Show 4 histograms with processing times as X axis and frequency as Y axis
+    da: list = processing_times["DA"]
+    sam: list = processing_times["SAM"]
+    clip: list = processing_times["CLIP"]
+    total: list = processing_times["total"]
+
+    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+    for ax, title, times in zip(
+        axes.flat, ("DA", "SAM", "CLIP", "total"), (da, sam, clip, total)
+    ):
+        ax.hist(times, bins=30)
+        ax.set(title=title, xlabel="Processing time", ylabel="Frequency")
+    fig.tight_layout()
+    plt.show()
+
 
 def show_mask(mask: np.ndarray, ax: Axes, random_color: bool = False):
     if random_color:
@@ -23,34 +39,42 @@ def show_score(point: list[int], score: float, ax: Axes):
     ax.text(x,y,f"{score:.2f}")
 
 
-def visualize_traversable_segments(segments: list[dict], raw_image: Image.Image, threshold: float = 0.01) -> None:
-    plt.imshow(np.array(raw_image))
-    ax = plt.gca()
+def visualize_traversable_segments(segments: list[dict], raw_image: Image.Image, threshold: float = 0.01, ax: Axes | None = None) -> None:
+    standalone = ax is None
+    if standalone:
+        _, ax = plt.subplots()
+    ax.imshow(np.array(raw_image))
     ax.set_autoscale_on(False)
     for segment in segments:
-        if segment['trav_score'] > threshold:
-            show_mask(segment['mask'], ax, random_color=True)
+        if segment['trav_score'] is not None and segment['trav_score'] > threshold:
+            show_mask(segment['mask'], ax)
             show_score(segment['point'], segment['trav_score'], ax)
-    plt.axis("off")
-    plt.show()
+    ax.axis("off")
+    if standalone:
+        plt.show()
     #del mask
     #gc.collect()
 
 
-def visualize_segment_scores(segments: list[dict], raw_image: Image.Image) -> None:
-    plt.imshow(np.array(raw_image))
-    ax = plt.gca()
+def visualize_segment_scores(segments: list[dict], raw_image: Image.Image, ax: Axes | None = None) -> None:
+    standalone = ax is None
+    if standalone:
+        _, ax = plt.subplots()
+    ax.imshow(np.array(raw_image))
     ax.set_autoscale_on(False)
     for segment in segments:
-        show_mask(segment['mask'], ax, random_color=True)
+        if segment['trav_score'] is None:
+            continue
+        show_mask(segment['mask'], ax)
         show_score(segment['point'], segment['trav_score'], ax)
-    plt.axis("off")
-    plt.show()
+    ax.axis("off")
+    if standalone:
+        plt.show()
     #del mask
     #gc.collect()
 
 
-def show_traversability(grid, robot_pose: tuple[float] | list[float] = (0,0,0)):
+def show_traversability(grid, robot_pose: tuple[float] | list[float] = (0,0,0), ax: Axes | None = None):
     cmap = LinearSegmentedColormap.from_list(
         "traversability", ["#082818", "#63ef88"]
     )
@@ -64,7 +88,10 @@ def show_traversability(grid, robot_pose: tuple[float] | list[float] = (0,0,0)):
         grid.offset_y + rows * grid.resolution,
     )
 
-    fig, ax = plt.subplots()
+    standalone = ax is None
+    if standalone:
+        _, ax = plt.subplots()
+    fig = ax.figure
     img = ax.imshow(
         np.ma.masked_less(grid.data, 0),
         cmap=cmap,
@@ -90,4 +117,5 @@ def show_traversability(grid, robot_pose: tuple[float] | list[float] = (0,0,0)):
         arrowprops=dict(arrowstyle="->", color="red", lw=2),
     )
     ax.plot(x, y, "ro", markersize=8)
-    plt.show()
+    if standalone:
+        plt.show()
