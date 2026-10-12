@@ -2197,6 +2197,7 @@ dependencies = [
     { name = "numpy" },
     { name = "open3d" },
     { name = "pillow" },
+    { name = "pyyaml" },
     { name = "torchvision" },
     { name = "transformers", extra = ["torch"] },
 ]
@@ -2208,6 +2209,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.5.3" },
     { name = "open3d", specifier = ">=0.19.0" },
     { name = "pillow", specifier = ">=12.3.0" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "torchvision", specifier = ">=0.29.0" },
     { name = "transformers", extras = ["torch"], specifier = ">=5.17.0" },
 ]
