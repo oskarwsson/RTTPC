@@ -93,6 +93,9 @@ def generate_sam_masks(
                     break
 
             if not is_duplicate:
+                # A view would keep the entire upsampled batch alive, including
+                # rejected masks. Retain only this accepted mask's allocation.
+                mask_np = mask_np.copy()
                 proposals.append({
                     'mask': mask_np,
                     'area': area,

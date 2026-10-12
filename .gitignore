@@ -4,3 +4,4 @@ Rellis-3D/*/pylon_camera_node/*
 Rellis-3D/*/camera_info.txt
 __pycache__
 *.zip
+pipeline_frames/
