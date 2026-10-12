@@ -17,8 +17,7 @@ class TraversabilityMap:
 
     def __init__(self, h: float, w: float, offset_x: float, offset_y: float,
                  resolution: float, decay_time: float | None = None):
-        for name, value in (("h", h), ("w", w), ("resolution", resolution),
-                            ("decay_time", decay_time)):
+        for name, value in (("h", h), ("w", w), ("resolution", resolution)):
             if not np.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
         if not np.isfinite([offset_x, offset_y]).all():
