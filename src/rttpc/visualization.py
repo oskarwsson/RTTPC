@@ -40,16 +40,16 @@ def create_gif(frame_dir: str | Path, output_path: str | Path = "pipeline.gif",
     )
     return output_path
 
-def visualize_processing_times(processing_times: dict[str, list[float]]):
+def visualize_processing_times(processing_times: dict[str, list[float]], VLM: str):
     # Show 4 histograms with processing times as X axis and frequency as Y axis
     da: list = processing_times["DA"]
     sam: list = processing_times["SAM"]
-    clip: list = processing_times["CLIP"]
+    vlm: list = processing_times[VLM]
     total: list = processing_times["total"]
 
     fig, axes = plt.subplots(2, 2, figsize=(10, 8))
     for ax, title, times in zip(
-        axes.flat, ("DA", "SAM", "CLIP", "total"), (da, sam, clip, total)
+        axes.flat, ("DA", "SAM", VLM, "total"), (da, sam, vlm, total)
     ):
         ax.hist(times, bins=30)
         ax.set(title=title, xlabel="Processing time", ylabel="Frequency")

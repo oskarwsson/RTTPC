@@ -7,6 +7,9 @@ from transformers import (
     CLIPConfig,
     AutoImageProcessor, 
     AutoModelForDepthEstimation,
+    AutoProcessor,
+    Qwen2_5_VLForConditionalGeneration,
+    Qwen2_5_VLProcessor,
 )
 import torch
 
@@ -16,6 +19,29 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+def load_qwen_model(
+    device: str | None = None,
+    model_id: str = "Qwen/Qwen2.5-VL-3B-Instruct",
+) -> tuple[Qwen2_5_VLForConditionalGeneration, Qwen2_5_VLProcessor, str]:
+    """Load a Qwen2.5-VL checkpoint; return (model, processor, device).
+
+    Defaults to CUDA when available, otherwise CPU. ``model_id`` can select
+    another Qwen2.5-VL instruction checkpoint or a local checkpoint directory.
+    """
+    device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    dtype = torch.float32
+    if device.type == "cuda":
+        with torch.cuda.device(device):
+            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+
+    logger.info("Loading Qwen model: %s...", model_id)
+    processor = AutoProcessor.from_pretrained(model_id)
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_id, dtype=dtype)
+    model = model.to(device)
+    model.eval()
+    logger.info("Qwen model loaded on device: %s", device)
+    return model, processor, str(device)
 
 def load_sam_model(device: str|None = None) -> tuple[SamModel, SamProcessor, str]:
     """

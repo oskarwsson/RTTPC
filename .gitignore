@@ -5,3 +5,5 @@ Rellis-3D/*/camera_info.txt
 __pycache__
 *.zip
 pipeline_frames/
+cave/
+hm3d/
