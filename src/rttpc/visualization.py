@@ -123,7 +123,7 @@ def visualize_segment_scores(segments: list[dict], raw_image: Image.Image, ax: A
 
 def show_traversability(grid, robot_pose: tuple[float] | list[float] = (0,0,0), ax: Axes | None = None):
     cmap = LinearSegmentedColormap.from_list(
-        "traversability", ["#082818", "#63ef88"]
+        "traversability",  ["#c0392b", "#f6d55c", "#2ecc71"]
     )
     cmap.set_bad("#909090")
 
@@ -161,8 +161,20 @@ def show_traversability(grid, robot_pose: tuple[float] | list[float] = (0,0,0), 
         xy=(x + arrow_length * np.cos(yaw),
             y + arrow_length * np.sin(yaw)),
         xytext=(x, y),
-        arrowprops=dict(arrowstyle="->", color="red", lw=2),
+        arrowprops=dict(arrowstyle="->", color="blue", lw=2),
     )
-    ax.plot(x, y, "ro", markersize=8)
+    ax.plot(x, y, "bo", markersize=8)
+
+    # Zoom around the robot, slightly ahead of its heading
+    view_radius = 25.0
+    lookahead = 10.0
+    
+    center_x = x + lookahead * np.cos(yaw)
+    center_y = y + lookahead * np.sin(yaw)
+    
+    ax.set_xlim(center_x - view_radius,
+                center_x + view_radius)
+    ax.set_ylim(center_y - view_radius,
+                center_y + view_radius)
     if standalone:
         plt.show()
