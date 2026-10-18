@@ -13,15 +13,16 @@ To enter the environment, run:
 ```bash
 source .venv/bin/activate
 ```
-Also add it to the known kernels:
-```bash
-.venv/bin/python -m ipykernel install --user --name rttpc --display-name "Python (RTTPC)"
-```
 
-Finally, to install dependencies, run: 
+To install dependencies, run: 
 ```bash
 uv sync
 ```  
+
+Finally, add the venv to the known kernels:
+```bash
+.venv/bin/python -m ipykernel install --user --name rttpc --display-name "Python (RTTPC)"
+```
 
 Done!
 
