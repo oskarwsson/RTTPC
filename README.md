@@ -3,6 +3,8 @@ Robot terrain traversability planning using only a camera and vision foundation 
 
 Project in the course DD2600 at KTH Stockholm.
 
+![til](./CLIP_rellis3d_00003.gif)
+
 ## Installation/setup
 In the code repository, create a virtual environment by running: 
 ```bash
